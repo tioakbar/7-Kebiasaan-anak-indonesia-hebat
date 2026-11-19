@@ -10,7 +10,10 @@
 (() => {
   'use strict';
 
-  const ENDPOINT = document.querySelector('meta[name="vertikal-ai-endpoint"]')?.content.trim() || 'api/chat.php';
+  // content = backend lokal (XAMPP); data-remote = Worker, dipakai di luar server lokal (GitHub Pages, file://).
+  const META = document.querySelector('meta[name="vertikal-ai-endpoint"]');
+  const LOCAL = location.protocol !== 'file:' && /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+  const ENDPOINT = ((!LOCAL && META?.dataset.remote) || META?.content || '').trim() || 'api/chat.php';
   const REMOTE = /^https?:\/\//i.test(ENDPOINT);
   // Token Worker hanya di sessionStorage tab ini (hilang saat tab ditutup).
   const TOKEN = 'vertikal-ai.token.v1';

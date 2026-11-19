@@ -25,6 +25,7 @@ Dengan `SHEET_API_URL`, data diambil langsung dari Google Spreadsheet lewat Apps
    | `SITE_URL` | Text | URL dashboard, mis. `https://akun.github.io/web3d/` |
    | `ALLOWED_ORIGINS` | Text | `https://akun.github.io` |
    | `GEMINI_MODEL` | Text | Opsional, default `gemini-3.8-flash` |
+   | `GEMINI_THINKING` | Text | Opsional, `low` (default, cepat), `medium`, atau `high` |
    | `SHEET_API_URL` | Text | Opsional (disarankan): URL Web App Apps Script, lihat `apps-script/README.md` |
    | `SHEET_API_TOKEN` | **Secret** | Token dari `siapkanVertikal()` di Apps Script |
 
@@ -72,7 +73,7 @@ npx wrangler deploy
   - 150 pertanyaan per hari;
   - 6 percobaan login per 15 menit;
   - pesan maksimal 800 karakter;
-  - timeout Gemini 45 detik;
+  - timeout Gemini 90 detik per panggilan;
   - maksimal 6 putaran model dan 8 pemanggilan fungsi per pertanyaan.
 - **Isi kiriman ke Gemini:** hanya hasil agregat. Kelompok dengan responden di bawah `CONFIG.minN` disembunyikan, termasuk penyembunyian sekunder.
 - **Pengecekan angka:** angka di jawaban yang tidak ada di hasil fungsi memicu satu permintaan perbaikan. Kalau angka itu masih ada, angkanya ditandai di chat.

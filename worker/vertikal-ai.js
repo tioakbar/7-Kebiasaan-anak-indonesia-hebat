@@ -36,9 +36,11 @@ const BARRIERS = [
 ];
 const GRADES = ['X', 'XI', 'XII'];
 
+const VERSION = '2026-11-19b';
+
 const LIMITS = {
-  timeoutMs: 45000, maxModelCalls: 6, maxToolCalls: 8, maxMessageChars: 800, maxTurns: 30,
-  tokenTtlSec: 8 * 3600, dataTtlMs: 60000,
+  timeoutMs: 90000, maxModelCalls: 6, maxToolCalls: 8, maxMessageChars: 800, maxTurns: 30,
+  tokenTtlSec: 8 * 3600, dataTtlMs: 60000, dataStaleMs: 6 * 3600 * 1000,
   rate: { ask: [12, 600], ask_day: [150, 86400], login: [6, 900], public: [120, 600] },
 };
 
@@ -551,33 +553,39 @@ function toolDeclarations() {
 }
 
 /* ---------- Gemini Interactions API ---------- */
-class GeminiError extends Error { constructor(kind, message) { super(message); this.kind = kind; } }
+class GeminiError extends Error { constructor(kind, message, detail = '') { super(message); this.kind = kind; this.detail = detail; } }
 
 async function geminiCreate(env, fetchImpl, input, tools, system, previousId, toolChoice) {
   const key = env.GEMINI_API_KEY;
   if (!key) throw new GeminiError('config', 'GEMINI_API_KEY belum diatur.');
-  const generation_config = { temperature: 0.2, max_output_tokens: 2048 };
+  // Thinking 'low' agar jawaban cepat; default model (medium) bisa melewati batas waktu.
+  const generation_config = { temperature: 0.2, max_output_tokens: 2048, thinking_level: env.GEMINI_THINKING || 'low' };
   if (toolChoice) generation_config.tool_choice = toolChoice;
   const body = { model: env.GEMINI_MODEL || 'gemini-3.8-flash', input, system_instruction: system, tools, generation_config };
   if (previousId) body.previous_interaction_id = previousId;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), LIMITS.timeoutMs);
+  const t0 = Date.now();
+  const info = `model ${body.model}, thinking ${generation_config.thinking_level}`;
   let res;
   try {
     res = await fetchImpl(env.GEMINI_ENDPOINT || 'https://generativelanguage.googleapis.com/v1beta/interactions', {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key }, body: JSON.stringify(body), signal: ctrl.signal,
     });
   } catch (e) {
-    throw new GeminiError(e.name === 'AbortError' ? 'timeout' : 'upstream', 'Tidak bisa terhubung ke Gemini.');
+    throw new GeminiError(e.name === 'AbortError' ? 'timeout' : 'upstream', 'Tidak bisa terhubung ke Gemini.',
+      e.name === 'AbortError' ? `tidak ada respons dalam ${LIMITS.timeoutMs / 1000} detik; ${info}` : `koneksi gagal (${e.name}); ${info}`);
   } finally { clearTimeout(timer); }
   const s = res.status;
   let json = null;
   try { json = await res.json(); } catch { /* bukan JSON */ }
-  if (s === 401 || s === 403) throw new GeminiError('auth', 'Kunci ditolak.');
-  if (s === 429) throw new GeminiError('quota', 'Kuota habis.');
-  if (s === 404) throw new GeminiError('upstream', 'Model atau sesi tidak ditemukan.');
-  if (s === 400) throw new GeminiError('invalid', 'Permintaan ditolak.');
-  if (s >= 500) throw new GeminiError('upstream', 'Layanan bermasalah.');
+  // Pesan error Google tidak memuat kunci; aman ditampilkan ke guru yang login.
+  const why = `HTTP ${s} setelah ${((Date.now() - t0) / 1000).toFixed(1)} detik; ${info}${json?.error?.message ? `: ${String(json.error.message).split(key).join('[kunci]').replace(/AIza[\w-]+|AQ\.[\w.-]+/g, '[kunci]').slice(0, 240)}` : ''}`;
+  if (s === 401 || s === 403) throw new GeminiError('auth', 'Kunci ditolak.', why);
+  if (s === 429) throw new GeminiError('quota', 'Kuota habis.', why);
+  if (s === 404) throw new GeminiError('upstream', 'Model atau sesi tidak ditemukan.', why);
+  if (s === 400) throw new GeminiError('invalid', 'Permintaan ditolak.', why);
+  if (s >= 500) throw new GeminiError('upstream', 'Layanan bermasalah.', why);
   if (!json || !json.id) throw new GeminiError('invalid', 'Respons tidak bisa dibaca.');
   if (json.status === 'failed') throw new GeminiError('upstream', 'Gemini gagal.');
   return json;
@@ -742,10 +750,25 @@ async function rateOk(env, bucket, ip) {
 
 /* ---------- dataset dari situs (cache singkat per isolate) ---------- */
 let dataCache = null;
-async function siteDataset(env, fetchImpl) {
+let refreshing = null;
+async function siteDataset(env, fetchImpl, ctx) {
   const base = String(env.SITE_URL || '').replace(/\/?$/, '/');
   if (!/^https?:\/\//.test(base)) throw new Error('SITE_URL belum diatur.');
-  if (dataCache && dataCache.base === base && Date.now() - dataCache.at < LIMITS.dataTtlMs) return dataCache.ds;
+  const c = dataCache && dataCache.base === base ? dataCache : null;
+  const age = c ? Date.now() - c.at : Infinity;
+  if (age < LIMITS.dataTtlMs) return c.ds;
+  if (age < LIMITS.dataStaleMs && ctx) {
+    if (!refreshing) ctx.waitUntil(startRefresh(env, fetchImpl, base).catch(() => { /* data lama tetap dipakai */ }));
+    return c.ds;
+  }
+  await startRefresh(env, fetchImpl, base);
+  return dataCache.ds;
+}
+function startRefresh(env, fetchImpl, base) {
+  if (!refreshing) refreshing = loadDatasetFresh(env, fetchImpl, base).finally(() => { refreshing = null; });
+  return refreshing;
+}
+async function loadDatasetFresh(env, fetchImpl, base) {
   const getText = async (p) => {
     const r = await fetchImpl(base + p, { cf: { cacheTtl: 60 } });
     return r.ok ? r.text() : null;
@@ -758,7 +781,6 @@ async function siteDataset(env, fetchImpl) {
     sheet = j;
   } else ds = await loadDataset(getText);
   dataCache = { base, at: Date.now(), ds, sheet };
-  return ds;
 }
 const sheetConfigured = (env) => !!(env.SHEET_API_URL && env.SHEET_API_TOKEN);
 async function fetchSheet(env, fetchImpl) {
@@ -794,7 +816,7 @@ function compareWithDashboard(dash, ds) {
   return { match: !diff.length, known: true, rounds_berbeda: diff, dashboard_contoh: dash.source === 'sample' };
 }
 
-async function handle(request, env, fetchImpl) {
+async function handle(request, env, fetchImpl, ctx) {
   const origin = request.headers.get('Origin');
   const allowed = String(env.ALLOWED_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
   const cors = {};
@@ -816,10 +838,10 @@ async function handle(request, env, fetchImpl) {
 
   if (request.method === 'GET') {
     if (new URL(request.url).searchParams.get('action') !== 'status') return json(400, { ok: false, error: 'Aksi tidak dikenal.' });
-    const out = { ok: true, authed, access_configured: accessConfigured, token_auth: true, sheet: sheetConfigured(env) };
+    const out = { ok: true, version: VERSION, authed, access_configured: accessConfigured, token_auth: true, sheet: sheetConfigured(env) };
     if (authed) {
       out.key_configured = !!env.GEMINI_API_KEY;
-      try { out.dataset = datasetPublic(await siteDataset(env, fetchImpl)); }
+      try { out.dataset = datasetPublic(await siteDataset(env, fetchImpl, ctx)); }
       catch { out.dataset = { mode: 'kosong', source: sheetConfigured(env) ? 'sheet' : 'csv', rounds: {}, errors: 1 }; }
     }
     return json(200, out);
@@ -845,7 +867,7 @@ async function handle(request, env, fetchImpl) {
       // Data bersih (tanpa nama/email) untuk dashboard; hanya setelah login guru.
       if (!authed) return json(401, { ok: false, error: 'Masukkan kode akses guru dulu.', code: 'auth' });
       if (!sheetConfigured(env)) return json(200, { ok: true, source: 'none' });
-      try { await siteDataset(env, fetchImpl); }
+      try { await siteDataset(env, fetchImpl, ctx); }
       // Pesan dari fetchSheet() aman ditampilkan ke guru (tanpa token/URL).
       catch (e) { return json(502, { ok: false, error: `${/^Spreadsheet /.test(e?.message || '') ? e.message : 'Spreadsheet belum bisa dibaca.'} Coba lagi sebentar lagi atau hubungi admin.`, code: 'sheet' }); }
       const j = dataCache.sheet;
@@ -855,7 +877,7 @@ async function handle(request, env, fetchImpl) {
       // Tampilan publik (siswa): data asli hanya tingkat sekolah dan jenjang, tanpa nama kelas.
       if (!sheetConfigured(env)) return json(200, { ok: true, source: 'none' });
       if (!await rateOk(env, 'public', ip)) return json(429, { ok: false, error: 'Terlalu banyak permintaan. Tunggu sebentar.' });
-      try { await siteDataset(env, fetchImpl); }
+      try { await siteDataset(env, fetchImpl, ctx); }
       catch { return json(502, { ok: false, error: 'Data spreadsheet belum bisa dibaca.', code: 'sheet' }); }
       return json(200, { ok: true, source: 'public', ...publicBridge(dataCache.sheet) });
     }
@@ -875,7 +897,7 @@ async function handle(request, env, fetchImpl) {
       const prev = conv && conv.t === 'conv' && conv.sid === session.sid ? conv : null;
       if (prev && prev.turns >= LIMITS.maxTurns) return json(409, { ok: false, error: 'Percakapan sudah panjang. Mulai percakapan baru.', code: 'conv_full' });
       let ds;
-      try { ds = await siteDataset(env, fetchImpl); }
+      try { ds = await siteDataset(env, fetchImpl, ctx); }
       catch { return json(502, { ok: false, error: 'Data dashboard tidak bisa dibaca dari situs. Periksa SITE_URL.', code: 'data' }); }
       const sync = compareWithDashboard(req.dashboard, ds);
       let res;
@@ -883,7 +905,7 @@ async function handle(request, env, fetchImpl) {
       catch (e) {
         if (e instanceof GeminiError) {
           const status = { config: 503, auth: 502, quota: 429, timeout: 504 }[e.kind] || 502;
-          return json(status, { ok: false, error: GEMINI_MESSAGES[e.kind] || 'Vertikal AI belum bisa menjawab sekarang. Coba lagi sebentar lagi.', code: `gemini_${e.kind}` });
+          return json(status, { ok: false, error: GEMINI_MESSAGES[e.kind] || 'Vertikal AI belum bisa menjawab sekarang. Coba lagi sebentar lagi.', code: `gemini_${e.kind}`, detail: e.detail || undefined });
         }
         throw e;
       }
@@ -900,8 +922,8 @@ async function handle(request, env, fetchImpl) {
 }
 
 export default {
-  async fetch(request, env) {
-    try { return await handle(request, env, fetch); }
+  async fetch(request, env, ctx) {
+    try { return await handle(request, env, fetch, ctx); }
     catch (e) {
       console.error('vertikal-ai', e && e.name);
       return new Response(JSON.stringify({ ok: false, error: 'Terjadi kesalahan di server. Coba lagi nanti.' }), { status: 500, headers: { 'Content-Type': 'application/json; charset=utf-8' } });

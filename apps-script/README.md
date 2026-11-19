@@ -33,11 +33,12 @@ Google Form ──▶ Spreadsheet (privat) ──▶ Apps Script (Code.gs) ─�
    | Cloudflare Worker | Variabel tipe *Text* | Variabel tipe **Secret** |
    | XAMPP | `SetEnv SHEET_API_URL "…/exec"` di `httpd-vertikal-ai.conf` | `SetEnv SHEET_API_TOKEN "…"` |
 
-7. Buka dashboard dan masuk dengan kode akses guru. Label di bawah sidebar akan menjadi **"Tersambung ke Google Spreadsheet"**.
+7. Di toolbar Apps Script, pilih fungsi **`pasangPemicuVertikal`** lalu klik **Jalankan** (izinkan akses bila diminta). Pemicu ini menyusun ulang data di latar setiap 10 menit, jadi dashboard tidak perlu menunggu penyusunan data (sekitar 20 detik untuk 1.000+ isian).
+8. Buka dashboard dan masuk dengan kode akses guru. Label di bawah sidebar akan menjadi **"Tersambung ke Google Spreadsheet"**.
 
 ## Pemakaian rutin
 
-- **Periode baru:** buat tab respons baru (misalnya dari Form periode berikutnya). Tab baru otomatis muncul sebagai periode terakhir, paling lambat 1 menit kemudian.
+- **Periode baru:** buat tab respons baru (misalnya dari Form periode berikutnya). Tab baru otomatis muncul sebagai periode terakhir, paling lambat sekitar 10 menit kemudian (jadwal pemicu).
 - **Kelas baru atau jumlah siswa berubah:** ubah tab **Master Kelas**.
 - **Nama kelas di Form salah ketik:** halaman *Laporan dan data* menandai nama kelas yang tidak ada di Master Kelas.
 - **Script diperbarui:** tempel `Code.gs` versi baru, lalu buka **Terapkan → Kelola deployment → Edit → Versi baru**. URL tidak berubah.

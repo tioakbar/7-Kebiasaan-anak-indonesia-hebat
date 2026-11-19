@@ -23,14 +23,14 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap">
-  <link rel="stylesheet" href="assets/styles.css?v=15">
+  <link rel="stylesheet" href="assets/styles.css?v=16">
   <link rel="stylesheet" href="assets/ai-chat.css?v=1">
   <!-- Vertikal AI: "api/chat.php" = backend PHP di XAMPP. Untuk GitHub Pages, ganti dengan URL
        Cloudflare Worker, mis. "https://vertikal-ai.akun.workers.dev/" (lihat worker/README.md). -->
-  <meta name="vertikal-ai-endpoint" content="https://vertikal-ai.tioakbar0.workers.dev/">
+  <meta name="vertikal-ai-endpoint" content="api/chat.php" data-remote="https://vertikal-ai.tioakbar0.workers.dev/">
   <script>document.documentElement.classList.add('js');</script>
 </head>
-<body>
+<body class="is-booting">
   <a class="skip-link" href="#main">Langsung ke konten</a>
   <div class="backdrop" aria-hidden="true"></div>
 
@@ -111,6 +111,7 @@
       </header>
 
       <main id="main" tabindex="-1">
+        <div class="boot-loader" data-boot role="status" aria-live="polite"><span class="boot-spin" aria-hidden="true"></span><span>Memuat data terbaru dari spreadsheet…</span></div>
         <div class="scope-guard panel" data-scope-guard role="status" hidden></div>
         <!-- ================= Ringkasan ================= -->
         <div class="view" data-view="ringkasan">
@@ -618,8 +619,8 @@
   <div class="tip" role="tooltip" hidden></div>
   <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 
-  <script src="assets/vertikal-api.js?v=2"></script>
-  <script src="assets/app.js?v=20"></script>
-  <script src="assets/ai-chat.js?v=3"></script>
+  <script src="assets/vertikal-api.js?v=3"></script>
+  <script src="assets/app.js?v=21"></script>
+  <script src="assets/ai-chat.js?v=4"></script>
 </body>
 </html>

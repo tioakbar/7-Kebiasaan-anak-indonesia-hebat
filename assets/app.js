@@ -402,23 +402,76 @@
     ROUNDS.forEach((r) => { DATA.from[r.id] = origin; });
   }
 
+  const LIVE_CACHE = { sheet: ['sessionStorage', 'kaih7.live.sheet.v1'], public: ['localStorage', 'kaih7.live.public.v1'] };
+  const liveSig = (d) => [d.baris.length, ...d.periode.map((p) => `${p.label}:${p.n}`), ...(d.kelas || []).map((k) => k.jumlah_siswa)].join('|');
+  function readLiveCache() {
+    for (const origin of ['sheet', 'public']) {
+      const [area, key] = LIVE_CACHE[origin];
+      try { const j = JSON.parse(window[area].getItem(key)); if (j && j.d && Array.isArray(j.d.periode)) return { origin, ...j }; } catch { /* abaikan */ }
+    }
+    return null;
+  }
+  function writeLiveCache(origin, d) {
+    const [area, key] = LIVE_CACHE[origin];
+    try { window[area].setItem(key, JSON.stringify({ d, sig: liveSig(d) })); } catch { /* penuh atau diblokir */ }
+  }
+  function clearLiveCache(origin) { const [area, key] = LIVE_CACHE[origin]; try { window[area].removeItem(key); } catch { /* abaikan */ } }
+  function finishLoad() {
+    cache.clear();
+    const note = { sheet: 'Tersambung ke Google Spreadsheet', public: 'Data sekolah terbaru', upload: 'Data upload di browser ini', repo: 'Data dari repo', sample: 'Menampilkan data contoh' };
+    $('[data-source-note]').textContent = note[DATA.origin];
+    updateTeacherUi();
+    publishDataInfo();
+  }
+  // Tampilkan data dari cache browser tanpa menunggu server.
+  function loadCached(c) {
+    DATA.issues = noIssues(); DATA.from = {};
+    applyBridge(c.d, c.origin);
+    DATA.live = { state: c.origin === 'sheet' ? 'on' : 'public' };
+    DATA.teacher = c.origin === 'sheet';
+    DATA.loginAvailable = true;
+    DATA.liveSig = c.sig;
+    finishLoad();
+  }
+  // Ambil data terbaru di latar; tampilan hanya diperbarui bila isinya berubah.
+  async function refreshLive() {
+    const before = { origin: DATA.origin, sig: DATA.liveSig, teacher: DATA.teacher };
+    const live = await loadLive();
+    if (!live || !['on', 'public'].includes(DATA.live.state) || !(live.periode || []).length) {
+      // Server sedang tidak bisa dibaca: data cache tetap dipakai.
+      DATA.live = { state: before.origin === 'sheet' ? 'on' : 'public' };
+      DATA.teacher = before.teacher;
+      return;
+    }
+    const origin = DATA.live.state === 'on' ? 'sheet' : 'public';
+    writeLiveCache(origin, live);
+    if (origin !== 'sheet') clearLiveCache('sheet');
+    if (origin === before.origin && liveSig(live) === before.sig) { updateTeacherUi(); return; }
+    DATA.issues = noIssues(); DATA.from = {};
+    applyBridge(live, origin);
+    DATA.liveSig = liveSig(live);
+    finishLoad();
+    afterReload(state.round);
+  }
+
   async function loadAll() {
     DATA.issues = noIssues(); DATA.from = {};
     const live = await loadLive();
     if (live && !(live.periode || []).length) DATA.live = { state: 'error', error: 'spreadsheet belum berisi tab isian' };
-    if (live && ['on', 'public'].includes(DATA.live.state)) applyBridge(live, DATA.live.state === 'on' ? 'sheet' : 'public');
-    else {
+    if (live && ['on', 'public'].includes(DATA.live.state)) {
+      const origin = DATA.live.state === 'on' ? 'sheet' : 'public';
+      applyBridge(live, origin);
+      DATA.liveSig = liveSig(live);
+      writeLiveCache(origin, live);
+      if (origin !== 'sheet') clearLiveCache('sheet');
+    } else {
       const store = readStore();
       const repo = store ? null : await fetchRepoData();
       if (store) applyBridge(store, 'upload');
       else if (repo) applyBridge(repo, 'repo');
       else applyBridge(sampleData(), 'sample');
     }
-    cache.clear();
-    const note = { sheet: 'Tersambung ke Google Spreadsheet', public: 'Data sekolah terbaru', upload: 'Data upload di browser ini', repo: 'Data dari repo', sample: 'Menampilkan data contoh' };
-    $('[data-source-note]').textContent = note[DATA.origin];
-    updateTeacherUi();
-    publishDataInfo();
+    finishLoad();
   }
 
   // Sidik jari per periode (FNV-1a 32-bit atas baris bersih yang diurutkan), sama dengan
@@ -1873,6 +1926,8 @@ ${sign ? `<table class="sign"><tr><td>Mengetahui,<br>Kepala SMA Plus PGRI Cibino
     return hide;
   }
 
+  function setBusy(on) { $('.sidebar-foot')?.classList.toggle('is-busy', on); }
+
   /* Login guru (satu login juga membuka Vertikal AI). Hanya dibuka dari tombol "Masuk guru". */
   function showLiveGate() {
     let el = $('.live-gate');
@@ -1892,11 +1947,17 @@ ${sign ? `<table class="sign"><tr><td>Mengetahui,<br>Kepala SMA Plus PGRI Cibino
       form.addEventListener('submit', async (e) => {
         e.preventDefault();
         if (!inp.value) return;
-        $('button[type="submit"]', el).disabled = true;
+        const btn = $('button[type="submit"]', el);
+        btn.disabled = true; btn.textContent = 'Memeriksa…';
+        $('.gate-err', el).textContent = '';
         const r = await window.VertikalAPI.login(inp.value);
-        $('button[type="submit"]', el).disabled = false;
-        if (r.ok) { inp.value = ''; el.hidden = true; $('.gate-err', el).textContent = ''; } // event vertikal:auth memuat ulang data
-        else { $('.gate-err', el).textContent = r.error || 'Gagal masuk.'; inp.select(); }
+        if (r.ok) {
+          // Event vertikal:auth sudah memulai pemuatan data kelas; tunggu sampai selesai.
+          btn.textContent = 'Memuat data kelas…';
+          await authReload;
+          inp.value = ''; el.hidden = true;
+        } else { $('.gate-err', el).textContent = r.network ? 'Server tidak bisa dihubungi. Coba lagi.' : (r.error || 'Gagal masuk.'); inp.select(); }
+        btn.disabled = false; btn.textContent = 'Masuk';
       });
       $('[data-gate-skip]', el).addEventListener('click', () => { el.hidden = true; });
       el.addEventListener('click', (e) => { if (e.target === el) el.hidden = true; });
@@ -1922,9 +1983,12 @@ ${sign ? `<table class="sign"><tr><td>Mengetahui,<br>Kepala SMA Plus PGRI Cibino
     if (e.currentTarget.dataset.mode === 'logout') { await window.VertikalAPI.logout(); return; }
     showLiveGate();
   });
+  let authReload = Promise.resolve();
   window.addEventListener('vertikal:auth', (e) => {
     // Login guru (dari dashboard atau chat) membuka rincian per kelas; keluar kembali ke tampilan umum.
-    reload().then(() => {
+    if (!e.detail?.authed) clearLiveCache('sheet');
+    setBusy(true);
+    authReload = reload().finally(() => setBusy(false)).then(() => {
       if (DATA.live?.state === 'error') toast(DATA.live.error);
       else toast(e.detail?.authed ? 'Masuk sebagai guru. Rincian per kelas terbuka.' : 'Keluar dari mode guru.');
     });
@@ -2189,6 +2253,9 @@ ${sign ? `<table class="sign"><tr><td>Mengetahui,<br>Kepala SMA Plus PGRI Cibino
   // Muat ulang data setelah upload/hapus, lalu pindah ke pengisian yang baru masuk.
   async function reload(roundId) {
     await loadAll();
+    afterReload(roundId);
+  }
+  function afterReload(roundId) {
     const has = roundsWithData().map((r) => r.id);
     state.round = has.includes(roundId) ? roundId : has.includes(state.round) ? state.round : has[has.length - 1] || 1;
     buildRoundCtl();
@@ -2316,7 +2383,8 @@ ${sign ? `<table class="sign"><tr><td>Mengetahui,<br>Kepala SMA Plus PGRI Cibino
     const hour = NOW.getHours();
     DATA.greet = `Selamat ${hour < 11 ? 'pagi' : hour < 15 ? 'siang' : hour < 18 ? 'sore' : 'malam'}`;
     $('[data-updated]').textContent = fmtTime(NOW);
-    await loadAll();
+    const cached = readLiveCache();
+    if (cached) loadCached(cached); else await loadAll();
     const has = roundsWithData();
     state.round = has.length ? has[has.length - 1].id : 1;
     buildRoundCtl();
@@ -2334,6 +2402,8 @@ ${sign ? `<table class="sign"><tr><td>Mengetahui,<br>Kepala SMA Plus PGRI Cibino
       window.addEventListener('hashchange', sync);
     }
     go();
+    document.body.classList.remove('is-booting');
+    if (cached) { setBusy(true); refreshLive().finally(() => setBusy(false)); }
     if (DATA.live?.state === 'error') toast(DATA.live.error);
     if (DATA.live?.state === 'nobackend') toast(`Data asli tidak terbaca: halaman dibuka tanpa server PHP. ${LOCAL_URL ? `Buka ${LOCAL_URL}` : 'Hubungkan backend Vertikal.'}`);
   }

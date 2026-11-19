@@ -261,7 +261,7 @@
     } else if (r.code === 'auth' || r.status === 401) {
       showLogin('Sesi berakhir. Masukkan kode akses lagi.');
     } else {
-      addMessage({ role: 'ai', error: true, text: r.network ? 'Server tidak bisa dihubungi. Coba lagi.' : (r.error || 'Vertikal AI belum bisa menjawab.'), time: timeNow() }, false);
+      addMessage({ role: 'ai', error: true, text: r.network ? 'Server tidak bisa dihubungi. Coba lagi.' : (r.error || 'Vertikal AI belum bisa menjawab.') + (r.detail ? ` (Rincian: ${r.detail})` : ''), time: timeNow() }, false);
     }
     state.busy = false;
     updateSend();

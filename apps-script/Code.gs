@@ -13,7 +13,9 @@
    ========================================================================== */
 
 var MASTER_SHEET = 'Master Kelas';
-var CACHE_SECONDS = 60;
+// Data disusun ulang di latar tiap 10 menit (pasangPemicuVertikal), jadi permintaan tidak perlu menunggu.
+var CACHE_SECONDS = 1500;
+var CHUNK = 40000; // batas CacheService 100 KB per nilai
 
 var HABIT_RE = [/bangun pagi/i, /ibadah/i, /olahraga atau aktivitas fisik/i, /isi piringku/i,
   /membaca buku|belajar hal baru/i, /kegiatan masyarakat|membantu orang lain/i, /tidur malam/i];
@@ -33,12 +35,49 @@ function doGet(e) {
   var token = PropertiesService.getScriptProperties().getProperty('DATA_TOKEN');
   var given = (e && e.parameter && e.parameter.token) || '';
   if (!token || !safeEqual_(given, token)) return json_({ ok: false, error: 'unauthorized' });
-  var cache = CacheService.getScriptCache();
-  var hit = cache.get('vertikal-data');
-  if (hit) return ContentService.createTextOutput(hit).setMimeType(ContentService.MimeType.JSON);
-  var text = JSON.stringify(buildData());
-  if (text.length < 95000) cache.put('vertikal-data', text, CACHE_SECONDS);
+  var text = readCache_() || writeCache_(JSON.stringify(buildData()));
   return ContentService.createTextOutput(text).setMimeType(ContentService.MimeType.JSON);
+}
+
+/* ---------- cache (dipecah per CHUNK karakter) ---------- */
+
+function writeCache_(text) {
+  var cache = CacheService.getScriptCache();
+  var parts = {};
+  var n = Math.ceil(text.length / CHUNK);
+  for (var i = 0; i < n; i++) parts['vertikal-data-' + i] = text.slice(i * CHUNK, (i + 1) * CHUNK);
+  parts['vertikal-data-n'] = String(n);
+  cache.putAll(parts, CACHE_SECONDS);
+  // Kunci lama (satu potong) tetap diisi agar web app versi lama juga cepat.
+  if (text.length < 95000) cache.put('vertikal-data', text, CACHE_SECONDS);
+  return text;
+}
+function readCache_() {
+  var cache = CacheService.getScriptCache();
+  var n = Number(cache.get('vertikal-data-n'));
+  if (!n) return cache.get('vertikal-data');
+  var keys = [];
+  for (var i = 0; i < n; i++) keys.push('vertikal-data-' + i);
+  var got = cache.getAll(keys);
+  var text = '';
+  for (var k = 0; k < keys.length; k++) { if (got[keys[k]] == null) return null; text += got[keys[k]]; }
+  return text;
+}
+
+/** Dijalankan pemicu tiap 10 menit: susun ulang data dan simpan di cache. */
+function perbaruiCacheVertikal() {
+  writeCache_(JSON.stringify(buildData()));
+}
+
+/** Jalankan sekali dari editor: pasang pemicu 10 menit dan isi cache sekarang. */
+function pasangPemicuVertikal() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'perbaruiCacheVertikal') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('perbaruiCacheVertikal').timeBased().everyMinutes(10).create();
+  var t0 = Date.now();
+  perbaruiCacheVertikal();
+  Logger.log('Pemicu terpasang. Data disusun dalam ' + ((Date.now() - t0) / 1000).toFixed(1) + ' detik dan disimpan di cache.');
 }
 
 function json_(obj) {
