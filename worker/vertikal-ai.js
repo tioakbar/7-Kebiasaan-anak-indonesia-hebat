@@ -36,7 +36,7 @@ const BARRIERS = [
 ];
 const GRADES = ['X', 'XI', 'XII'];
 
-const VERSION = '2026-11-19b';
+const VERSION = '2026-11-19c';
 
 const LIMITS = {
   timeoutMs: 90000, maxModelCalls: 6, maxToolCalls: 8, maxMessageChars: 800, maxTurns: 30,
@@ -658,12 +658,30 @@ function unsupportedNumbers(answer, results, question) {
   nums = [...new Set(nums.map((v) => phpRound(v, 1)))];
   const ok = new Set();
   for (const v of nums) { ok.add(nkey(v)); ok.add(nkey(phpRound(v))); }
-  if (nums.length <= 600) for (let i = 0; i < nums.length; i++) for (let j = i + 1; j < nums.length; j++) { const d = Math.abs(nums[i] - nums[j]); ok.add(nkey(d)); ok.add(nkey(phpRound(d))); }
   [30, 100, 2026, 22, 5, 0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13].forEach((c) => ok.add(nkey(c)));
   ['22.00', '05.00', '5.00'].forEach((c) => readings(c).forEach((n) => ok.add(nkey(n))));
+  // Selisih dua angka hasil fungsi juga sah. Dicek per angka jawaban (bukan semua pasangan),
+  // karena Worker gratis hanya punya 10 ms CPU per permintaan.
+  const pairs = nums.length <= 600;
+  const isDiff = (n) => {
+    if (!pairs) return false;
+    const key = nkey(n);
+    const tenths = Math.round(n * 10);
+    for (let i = 0; i < nums.length; i++) for (let j = i + 1; j < nums.length; j++) {
+      const d = Math.abs(nums[i] - nums[j]);
+      // Saring murah dulu: selisih harus dekat n (pembulatan 1 desimal atau ke bilangan bulat).
+      if (Math.abs(d * 10 - tenths) > 6) continue;
+      if (nkey(d) === key || nkey(phpRound(d)) === key) return true;
+    }
+    return false;
+  };
   const clean = String(answer).replace(/\b(?:XII|XI|X)\s*-\s*\d+\b/gu, ' ').replace(/\bP\d\b/gu, ' ').replace(/\bSoal\s+\d+(?:\s*[–-]\s*\d+)?/giu, ' ');
   const bad = [];
-  for (const t of clean.match(/\d+(?:[.,]\d+)*/g) || []) if (!readings(t).some((n) => ok.has(nkey(n))) && !bad.includes(t)) bad.push(t);
+  for (const t of clean.match(/\d+(?:[.,]\d+)*/g) || []) {
+    if (bad.includes(t)) continue;
+    const rs = readings(t);
+    if (!rs.some((n) => ok.has(nkey(n))) && !rs.some(isDiff)) bad.push(t);
+  }
   return bad;
 }
 
@@ -925,8 +943,13 @@ export default {
   async fetch(request, env, ctx) {
     try { return await handle(request, env, fetch, ctx); }
     catch (e) {
-      console.error('vertikal-ai', e && e.name);
-      return new Response(JSON.stringify({ ok: false, error: 'Terjadi kesalahan di server. Coba lagi nanti.' }), { status: 500, headers: { 'Content-Type': 'application/json; charset=utf-8' } });
+      console.error('vertikal-ai', e && e.name, e && e.message);
+      // Tetap kirim CORS untuk origin yang diizinkan, agar browser bisa membaca pesan error ini.
+      const origin = request.headers.get('Origin');
+      const allowed = String(env.ALLOWED_ORIGINS || '').split(',').map((s) => s.trim());
+      const headers = { 'Content-Type': 'application/json; charset=utf-8' };
+      if (origin && allowed.includes(origin)) Object.assign(headers, { 'Access-Control-Allow-Origin': origin, Vary: 'Origin' });
+      return new Response(JSON.stringify({ ok: false, error: 'Terjadi kesalahan di server. Coba lagi nanti.', detail: e && e.name ? `${e.name}` : undefined }), { status: 500, headers });
     }
   },
 };

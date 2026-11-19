@@ -595,15 +595,21 @@
   const scopeOk = (r, grade) => grade === 'all' || r.grade === grade;
   // Tanpa argumen jenjang = cakupan filter aktif (jenjang, dan satu kelas bila dipilih).
   const inScope = (r, grade) => (grade === undefined ? scopeOk(r, state.grade) && (!state.kelas || r.rombel === state.kelas) : scopeOk(r, grade));
-  const rowsOf = (round, grade) => DATA.rows.filter((r) => r.round === round && inScope(r, grade));
+  // Periode 0 = gabungan semua periode: indeks dari semua isian, partisipasi rata-rata per periode.
+  const ALL = 0;
+  const inRound = (r, round) => round === ALL || r.round === round;
+  const rowsOf = (round, grade) => DATA.rows.filter((r) => inRound(r, round) && inScope(r, grade));
+  // Jumlah periode yang digabung (untuk partisipasi rata-rata per periode).
+  const withK = (st, round) => { if (round === ALL) st.k = Math.max(1, roundsWithData().length); return st; };
+  const nPer = (st) => st.n / (st.k || 1);
   function statsOf(round, grade) {
     const k = `${round}|${grade ?? `${state.grade}|${state.kelas || ''}`}`;
-    if (!cache.has(k)) cache.set(k, stats(rowsOf(round, grade)));
+    if (!cache.has(k)) cache.set(k, withK(stats(rowsOf(round, grade)), round));
     return cache.get(k);
   }
   function statsRombel(round, name) {
     const k = `${round}|rb:${name}`;
-    if (!cache.has(k)) cache.set(k, stats(DATA.rows.filter((r) => r.round === round && r.rombel === name)));
+    if (!cache.has(k)) cache.set(k, withK(stats(DATA.rows.filter((r) => inRound(r, round) && r.rombel === name)), round));
     return cache.get(k);
   }
   const rombelScope = () => ROMBEL.filter((rb) => scopeOk(rb, state.grade) && (!state.kelas || rb.name === state.kelas));
@@ -616,7 +622,17 @@
   const partOf = (n, pop) => (pop ? n / pop : null);
   const fmtPart = (v, d = 0) => (v === null ? '–' : fmtPct(v, d));
   const knownRombel = (name) => ROMBEL.some((rb) => rb.name === name);
-  const roundById = (id) => ROUNDS.find((r) => r.id === id) || ROUNDS[0];
+  function allRound() {
+    const has = roundsWithData();
+    const first = has[0]; const last = has[has.length - 1];
+    return { id: ALL, label: 'Semua periode', all: true, count: has.length, main: first?.main || null, makeup: last ? last.makeup || last.main : null };
+  }
+  const roundById = (id) => (id === ALL ? allRound() : ROUNDS.find((r) => r.id === id) || ROUNDS[0]);
+  const isAll = () => state.round === ALL;
+  // "periode 7 November" atau "gabungan semua periode", untuk kalimat keterangan.
+  const periodText = (r = roundById(state.round)) => (r.all ? `gabungan ${r.count} periode` : `periode ${r.label}`);
+  // Periode yang ikut dihitung "sampai periode terpilih".
+  const upTo = (id) => isAll() || id <= state.round;
   const roundsWithData = () => ROUNDS.filter((r) => DATA.rows.some((x) => x.round === r.id));
   const prevRoundId = () => roundsWithData().map((r) => r.id).filter((id) => id < state.round).pop() ?? null;
   const scopeName = (g) => (g === undefined && state.kelas ? `kelas ${state.kelas}` : (g ?? state.grade) === 'all' ? 'semua jenjang' : `kelas ${g ?? state.grade}`);
@@ -926,7 +942,7 @@
     if (prev) poly.setAttribute('points', prev.index.map((v, i) => polar(R * v, i * STEP).map((n) => n.toFixed(2)).join(',')).join(' '));
     poly.toggleAttribute('hidden', !state.compare || !prev);
     $('[data-compare]').disabled = !prev;
-    svg.setAttribute('aria-label', `Indeks tujuh kebiasaan periode ${rLabel(roundById(state.round))}, rata-rata ${fmtIdx(s.overall)}. Pilih kelopak untuk melihat detail.`);
+    svg.setAttribute('aria-label', `Indeks tujuh kebiasaan ${periodText()}, rata-rata ${fmtIdx(s.overall)}. Pilih kelopak untuk melihat detail.`);
   }
 
   function renderHabitList(s, prev) {
@@ -980,27 +996,29 @@
     const pid = prevRoundId();
     const prev = pid ? statsOf(pid) : null;
     const pop = popOf();
-    const part = partOf(s.n, pop);
+    const part = partOf(nPer(s), pop);
     const prevName = pid ? rLabel(roundById(pid)) : '';
     const order = [...HABITS.keys()].sort((a, b) => s.index[b] - s.index[a]);
     const strong = order[0]; const weak = order[6];
 
     const who = state.kelas ? `kelas ${state.kelas} ` : state.grade === 'all' ? '' : `kelas ${state.grade} `;
-    $('[data-hero-lead]').textContent = `${rLabel(roundById(state.round))}: ${fmtNum(s.n)} ${pop ? `dari ${fmtNum(pop)} ` : ''}siswa ${who}sudah mengisi kuesioner.`;
+    $('[data-hero-lead]').textContent = isAll()
+      ? `Semua periode: ${fmtNum(s.n)} isian dari ${fmtNum(s.k)} periode${pop ? `, rata-rata ${fmtNum(nPer(s))} dari ${fmtNum(pop)} siswa ${who}tiap periode` : ''}.`
+      : `${rLabel(roundById(state.round))}: ${fmtNum(s.n)} ${pop ? `dari ${fmtNum(pop)} ` : ''}siswa ${who}sudah mengisi kuesioner.`;
     $('[data-hero-sub]').textContent =
       `Indeks 7 KAIH ${fmtIdx(s.overall)}${prev ? `, ${s.overall >= prev.overall ? 'naik' : 'turun'} ${nf(1).format(Math.abs((s.overall - prev.overall) * 100))} poin dari ${prevName}` : ''}. ` +
       `${HABITS[weak].name} masih paling rendah (${fmtIdx(s.index[weak])}).`;
 
     const series = roundsWithData().map((r) => ({ r, s: statsOf(r.id) }));
-    const sp = { part: series.map((x) => (pop ? x.s.n / pop : x.s.n)), overall: series.map((x) => x.s.overall), consAvg: series.map((x) => x.s.consAvg), gawaiRisk: series.map((x) => x.s.gawaiRisk) };
+    const sp = { part: series.map((x) => (pop ? nPer(x.s) / pop : x.s.n)), overall: series.map((x) => x.s.overall), consAvg: series.map((x) => x.s.consAvg), gawaiRisk: series.map((x) => x.s.gawaiRisk) };
     $$('[data-spark]').forEach((p) => { p.setAttribute('d', sparkPath(sp[p.dataset.spark])); replay(p); });
 
     countTo($('[data-kpi="resp"]'), s.n, fmtNum);
     countTo($('[data-kpi="index"]'), s.overall, fmtIdx);
     countTo($('[data-kpi="cons"]'), s.consAvg, (v) => `${nf(1).format(v)} dari 7`);
     countTo($('[data-kpi="gawai"]'), s.gawaiRisk, (v) => fmtPct(v, 1));
-    $('[data-kpi-meta="resp"]').innerHTML = `Partisipasi <b>${fmtPart(part, 1)}</b>${pop || isPublic() ? '' : ' (isi jumlah siswa di Master Kelas)'}`;
-    $('[data-kpi-meta="index"]').innerHTML = prev ? trendTag(s.overall - prev.overall, `dari ${prevName}`) : 'Pengisian pertama';
+    $('[data-kpi-meta="resp"]').innerHTML = `${isAll() ? 'Rata-rata partisipasi per periode' : 'Partisipasi'} <b>${fmtPart(part, 1)}</b>${pop || isPublic() ? '' : ' (isi jumlah siswa di Master Kelas)'}`;
+    $('[data-kpi-meta="index"]').innerHTML = prev ? trendTag(s.overall - prev.overall, `dari ${prevName}`) : isAll() ? `Gabungan ${fmtNum(s.k)} periode` : 'Pengisian pertama';
     $('[data-kpi-meta="cons"]').innerHTML = `<b>${fmtPct(s.all7, 1)}</b> siswa konsisten di ketujuhnya`;
     $('[data-kpi-meta="gawai"]').innerHTML = prev ? trendTag(s.gawaiRisk - prev.gawaiRisk, `dari ${prevName}`, true) : 'Lebih dari 30 menit setelah berbaring';
 
@@ -1016,10 +1034,10 @@
   function renderPulse(s, prev) {
     const r = roundById(state.round);
     const pop = popOf();
-    const part = partOf(s.n, pop);
-    const series = roundsWithData().filter((x) => x.id <= state.round).map((x) => statsOf(x.id)).filter((x) => x.n && !(state.kelas && x.n < CONFIG.minN));
+    const part = partOf(nPer(s), pop);
+    const series = roundsWithData().filter((x) => upTo(x.id)).map((x) => statsOf(x.id)).filter((x) => x.n && !(state.kelas && x.n < CONFIG.minN));
     const maxN = Math.max(...roundsWithData().map((x) => statsOf(x.id).n), 1);
-    const ringV = part === null ? s.n / maxN : clamp(part, 0, 1);
+    const ringV = part === null ? clamp(nPer(s) / maxN, 0, 1) : clamp(part, 0, 1);
     $('[data-pulse-title]').textContent = `Sekilas ${state.kelas ? `kelas ${state.kelas}` : state.grade === 'all' ? 'periode ini' : `kelas ${state.grade}`}`;
     const arc = $('[data-pulse-arc]');
     arc.style.setProperty('--v', (ringV * 100).toFixed(1));
@@ -1038,7 +1056,7 @@
     $('[data-pulse-area]').setAttribute('d', line ? `${line} L100 32 L0 32 Z` : '');
     replay($('[data-pulse-spark]'));
     $('[data-pulse-trend]').innerHTML = vals.length > 1
-      ? `Indeks 7 KAIH <b class="num">${fmtIdx(vals[0])} → ${fmtIdx(vals[vals.length - 1])}</b><span>${fmtNum(vals.length)} periode sampai ${esc(rLabel(r))}</span>`
+      ? `Indeks 7 KAIH <b class="num">${fmtIdx(vals[0])} → ${fmtIdx(vals[vals.length - 1])}</b><span>${fmtNum(vals.length)} periode${r.all ? '' : ` sampai ${esc(rLabel(r))}`}</span>`
       : `Indeks 7 KAIH <b class="num">${fmtIdx(s.overall)}</b><span>tren muncul mulai periode kedua</span>`;
 
     const items = [];
@@ -1058,9 +1076,9 @@
         ? { ico: 'up', label: 'Paling membaik', value: HABITS[k].name, meta: `${fmtPts(d[k])} poin` }
         : { ico: 'down', label: 'Belum ada yang membaik', value: 'dari periode lalu', meta: '' });
     }
-    const late = rombelScope().filter((rb) => rb.size && statsRombel(state.round, rb.name).n / rb.size < CONFIG.target).length;
+    const late = rombelScope().filter((rb) => rb.size && nPer(statsRombel(state.round, rb.name)) / rb.size < CONFIG.target).length;
     items.push(pop && state.kelas
-      ? { ico: 'warn', label: 'Belum mengisi', value: `${fmtNum(Math.max(0, pop - s.n))} siswa`, meta: `dari ${fmtNum(pop)}` }
+      ? { ico: 'warn', label: 'Belum mengisi', value: `${fmtNum(Math.max(0, pop - nPer(s)))} siswa`, meta: `dari ${fmtNum(pop)}` }
       : pop
       ? { ico: 'warn', label: 'Di bawah target isi', value: `${fmtNum(late)} kelas`, meta: `dari ${fmtNum(rombelScope().length)}` }
       : { ico: 'cal', label: 'Periode tercatat', value: `${fmtNum(roundsWithData().length)} periode`, meta: ROUNDS[0] ? `sejak ${rLabel(ROUNDS[0])}` : '' });
@@ -1108,7 +1126,7 @@
     const maxN = Math.max(...list.map((r) => statsOf(r.id).n), 1);
     $('[data-timeline]').innerHTML = list.map((r, i) => {
       const s = statsOf(r.id); const has = s.n > 0;
-      const part = partOf(s.n, pop);
+      const part = partOf(nPer(s), pop);
       const w = part === null ? s.n / maxN : part;
       return `<li class="tl done${r.id === state.round ? ' is-current' : ''}" style="--i:${i}">
         <button type="button" class="tl-btn" data-pick-round="${r.id}" ${has ? '' : 'disabled'} aria-pressed="${r.id === state.round}">
@@ -1193,7 +1211,7 @@
     });
 
     // Analisis singkat: tren, peringkat, kelompok "0 hari", dan perbedaan jenjang.
-    const got = ROUNDS.map((r, k) => ({ r, x: ss[k] })).filter((p) => p.x && p.r.id <= state.round);
+    const got = ROUNDS.map((r, k) => ({ r, x: ss[k] })).filter((p) => p.x && upTo(p.r.id));
     const parts = [];
     if (got.length >= 2) {
       const a = got[0]; const b = got[got.length - 1]; const dd = b.x.index[i] - a.x.index[i];
@@ -1222,7 +1240,7 @@
 
   function renderHabitGrades() {
     const i = state.habit;
-    $('[data-hgrade-desc]').textContent = `${HABITS[i].name} per jenjang pada periode ${rLabel(roundById(state.round))}. Angka di kanan = indeks.`;
+    $('[data-hgrade-desc]').textContent = `${HABITS[i].name} per jenjang, ${periodText()}. Angka di kanan = indeks.`;
     $('[data-hgrade-list]').innerHTML = GRADES.map((g, k) => {
       const s = statsOf(state.round, g);
       return `<div class="stack-row static${state.grade === g ? ' is-on' : ''}" style="--i:${k}">
@@ -1279,7 +1297,7 @@
       if (!s) return col({ label: shortLabel(r), sub: '', value: '–', segs: [{ v: 0, c: 'transparent' }], i, target: pop ? CONFIG.target : null });
       // Jumlah siswa belum diisi: tinggi kolom = jumlah responden relatif terhadap periode terbanyak.
       if (!pop) return col({ label: shortLabel(r), sub: '', value: fmtNum(s.n), i, segs: [{ v: s.n / maxN, c: 'var(--amber)' }], tip: `${rLabel(r)}: ${fmtNum(s.n)} responden` });
-      return col({ label: shortLabel(r), sub: '', value: fmtPct(s.n / pop), i, target: CONFIG.target, segs: [{ v: s.n / pop, c: 'var(--amber)' }], tip: `${rLabel(r)}: ${fmtNum(s.n)} dari ${fmtNum(pop)} siswa` });
+      return col({ label: shortLabel(r), sub: '', value: fmtPct(nPer(s) / pop), i, target: CONFIG.target, segs: [{ v: nPer(s) / pop, c: 'var(--amber)' }], tip: `${rLabel(r)}: ${fmtNum(s.n)} dari ${fmtNum(pop)} siswa` });
     }).join('');
 
     // Perubahan per kebiasaan
@@ -1301,9 +1319,9 @@
   function renderKelas() {
     const list = rombelScope().map((rb) => {
       const s = statsRombel(state.round, rb.name);
-      return { rb, s, part: partOf(s.n, rb.size), ok: s.n >= CONFIG.minN };
+      return { rb, s, part: partOf(nPer(s), rb.size), ok: s.n >= CONFIG.minN };
     });
-    $('[data-heat-desc]').textContent = `Indeks (0–100) tiap kebiasaan per rombel, ${rLabel(roundById(state.round))}. Warna makin pekat = makin baik. Pilih judul kolom untuk mengurutkan.`;
+    $('[data-heat-desc]').textContent = `Indeks (0–100) tiap kebiasaan per rombel, ${periodText()}. Warna makin pekat = makin baik. Pilih judul kolom untuk mengurutkan.`;
 
     const cols = [
       { key: 'name', label: 'Rombel' }, { key: 'n', label: 'Resp.' }, { key: 'part', label: 'Partisipasi' },
@@ -1338,7 +1356,7 @@
 
     // Jenjang
     const gs = GRADES.map((g) => ({ g, s: statsOf(state.round, g), pop: popOf(g) }));
-    const pr = (x) => (x.pop ? x.s.n / x.pop : null);
+    const pr = (x) => (x.pop ? nPer(x.s) / x.pop : null);
     const best = [...gs].sort((a, b) => (pr(b) ?? b.s.n) - (pr(a) ?? a.s.n));
     $('[data-grade-summary]').textContent = gs.every((x) => x.pop)
       ? `Kelas ${best[0].g} paling aktif mengisi (${fmtPct(pr(best[0]))}), kelas ${best[2].g} paling rendah (${fmtPct(pr(best[2]))}).`
@@ -1346,7 +1364,7 @@
     $('[data-grade-list]').innerHTML = gs.map((x, i) => `
       <div class="grade${state.grade !== 'all' && state.grade !== x.g ? ' is-dim' : ''}" style="--i:${i}">
         <div class="grade-head"><span class="grade-name">Kelas ${x.g}</span><span class="grade-meta num">${fmtNum(x.s.n)}${x.pop ? ` dari ${fmtNum(x.pop)}` : ''} siswa</span></div>
-        ${x.pop ? `<div class="bar-row"><div class="bar-track"><div class="bar-fill amber" style="--v:${(x.s.n / x.pop).toFixed(4)}"></div></div><span class="bar-val num">${fmtPct(x.s.n / x.pop)}</span></div>` : ''}
+        ${x.pop ? `<div class="bar-row"><div class="bar-track"><div class="bar-fill amber" style="--v:${(nPer(x.s) / x.pop).toFixed(4)}"></div></div><span class="bar-val num">${fmtPct(nPer(x.s) / x.pop)}</span></div>` : ''}
         <div class="bar-row"><div class="bar-track thin"><div class="bar-fill ivory" style="--v:${x.s.overall.toFixed(4)}"></div></div><span class="bar-val num">${fmtIdx(x.s.overall)}</span></div>
       </div>`).join('');
 
@@ -1486,7 +1504,7 @@
       { ok: DATA.master && noSize === 0, warn: true, t: DATA.master ? `${fmtNum(noSize)} kelas belum diisi jumlah siswanya di Master Kelas, jadi partisipasinya belum bisa dihitung.` : 'Tab "Master Kelas" belum ada, jadi daftar kelas diambil dari isian dan partisipasi belum bisa dihitung.' },
       { ok: outside === 0, warn: true, t: `${fmtNum(outside)} nama kelas di isian tidak ada di Master Kelas (cek salah ketik di Form).` },
       { ok: over.length === 0, t: over.length ? `Responden melebihi jumlah siswa di ${over.join(', ')}. Cek Master Kelas atau isian ganda.` : 'Tidak ada kelas dengan responden melebihi jumlah siswa.' },
-      { ok: small === 0, warn: true, t: `${fmtNum(small)} kelas di periode ${rLabel(roundById(state.round))} punya kurang dari ${CONFIG.minN} responden, rinciannya disembunyikan.` },
+      { ok: small === 0, warn: true, t: `${fmtNum(small)} kelas pada ${periodText()} punya kurang dari ${CONFIG.minN} responden, rinciannya disembunyikan.` },
     ];
     $('[data-checks]').innerHTML = checks.map((c, i) => `<li class="check ${c.ok ? (c.info ? 'info' : 'ok') : c.warn ? 'warn' : 'bad'}" style="--i:${i}"><span class="check-ico" aria-hidden="true"></span>${esc(c.t)}</li>`).join('');
     $('[data-min-n]').textContent = CONFIG.minN;
@@ -1532,14 +1550,14 @@
       build() {
         return [['Rombel', 'Jenjang', 'Jumlah siswa', 'Responden', 'Partisipasi (%)', ...HABITS.map((h) => `${h.name} (indeks)`), 'Indeks 7 KAIH', 'HP di kasur >= 2 malam (%)'],
           ...rombelScope().map((rb) => { const s = statsRombel(state.round, rb.name); const ok = s.n >= CONFIG.minN;
-            return [rb.name, rb.grade, rb.size || '', s.n, rb.size ? pctCell(s.n / rb.size) : '', ...(ok ? [...s.index.map(pctCell), pctCell(s.overall), pctCell(s.gawaiRisk)] : Array(9).fill('sampel kecil'))]; })];
+            return [rb.name, rb.grade, rb.size || '', s.n, rb.size ? pctCell(nPer(s) / rb.size) : '', ...(ok ? [...s.index.map(pctCell), pctCell(s.overall), pctCell(s.gawaiRisk)] : Array(9).fill('sampel kecil'))]; })];
       },
     },
     jenjang: {
       label: 'Rekap per jenjang', desc: 'Ringkasan yang sama per kelas X, XI, dan XII.',
       build() {
         return [['Jenjang', 'Jumlah siswa', 'Responden', 'Partisipasi (%)', ...HABITS.map((h) => `${h.name} (indeks)`), 'Indeks 7 KAIH', 'HP di kasur >= 2 malam (%)'],
-          ...GRADES.map((g) => { const s = statsOf(state.round, g); return [g, popOf(g), s.n, pctCell(s.n / popOf(g)), ...s.index.map(pctCell), pctCell(s.overall), pctCell(s.gawaiRisk)]; })];
+          ...GRADES.map((g) => { const s = statsOf(state.round, g); return [g, popOf(g), s.n, pctCell(nPer(s) / popOf(g)), ...s.index.map(pctCell), pctCell(s.overall), pctCell(s.gawaiRisk)]; })];
       },
     },
     kebiasaan: {
@@ -1555,7 +1573,7 @@
       label: 'Tren antar periode', desc: 'Responden, partisipasi, dan indeks tiap kebiasaan untuk setiap periode di rentang.',
       build(list = roundsWithData()) {
         return [['Pengisian', 'Tanggal', 'Responden', 'Partisipasi (%)', ...HABITS.map((h) => `${h.name} (indeks)`), 'Indeks 7 KAIH', 'HP di kasur >= 2 malam (%)'],
-          ...list.map((r) => { const s = statsOf(r.id); const pop = popOf(); return [r.label, r.main ? isoDate(r.main) : '', s.n, pop ? pctCell(s.n / pop) : '', ...(s.n ? [...s.index.map(pctCell), pctCell(s.overall), pctCell(s.gawaiRisk)] : Array(9).fill(''))]; })];
+          ...list.map((r) => { const s = statsOf(r.id); const pop = popOf(); return [r.label, r.main ? isoDate(r.main) : '', s.n, pop ? pctCell(nPer(s) / pop) : '', ...(s.n ? [...s.index.map(pctCell), pctCell(s.overall), pctCell(s.gawaiRisk)] : Array(9).fill(''))]; })];
       },
     },
     hambatan: {
@@ -1671,7 +1689,7 @@ ${sign ? `<table class="sign"><tr><td>Mengetahui,<br>Kepala SMA Plus PGRI Cibino
   function reportRange() {
     const has = roundsWithData().map((r) => r.id);
     let from = state.rangeFrom && has.includes(state.rangeFrom) ? state.rangeFrom : has[0];
-    let to = state.rangeTo && has.includes(state.rangeTo) ? state.rangeTo : state.round;
+    let to = state.rangeTo && has.includes(state.rangeTo) ? state.rangeTo : isAll() ? has[has.length - 1] : state.round;
     if (from > to) [from, to] = [to, from];
     return { from, to, rounds: roundsWithData().filter((r) => r.id >= from && r.id <= to) };
   }
@@ -1694,7 +1712,7 @@ ${sign ? `<table class="sign"><tr><td>Mengetahui,<br>Kepala SMA Plus PGRI Cibino
   const scopeText = () => (state.kelas ? `Kelas ${state.kelas}` : state.grade === 'all' ? 'Seluruh sekolah' : `Jenjang kelas ${state.grade}`);
   const fillText = (id) => {
     const s = statsOf(id); const pop = popOf();
-    return pop ? `${fmtNum(s.n)} dari ${fmtNum(pop)} siswa mengisi (${fmtPct(s.n / pop, 1)})` : `${fmtNum(s.n)} siswa mengisi`;
+    return pop ? `${fmtNum(s.n)} dari ${fmtNum(pop)} siswa mengisi (${fmtPct(nPer(s) / pop, 1)})` : `${fmtNum(s.n)} siswa mengisi`;
   };
   const REPORT_VERDICT = { rombel: 'kelas', jenjang: 'kebiasaan', kebiasaan: 'kebiasaan', hambatan: 'hambatan' };
   // Laporan satu periode diulang untuk tiap periode di rentang; tren memakai seluruh rentang sekaligus.
@@ -1826,7 +1844,7 @@ ${sign ? `<table class="sign"><tr><td>Mengetahui,<br>Kepala SMA Plus PGRI Cibino
     const s = statsRombel(r.id, rb.name);
     const gs = statsOf(r.id, rb.grade);
     const all = statsOf(r.id, 'all');
-    const part = partOf(s.n, rb.size);
+    const part = partOf(nPer(s), rb.size);
     $('[data-rapor-title]').textContent = `Rapor ${rb.name}`;
     $('[data-rapor-desc]').textContent = `${rLabel(r)}${rRange(r) ? ` (diisi ${rRange(r)})` : ''} · ${fmtNum(s.n)} responden${rb.size ? ` dari ${fmtNum(rb.size)} siswa (${fmtPct(part)})` : ''}. Dibandingkan dengan kelas ${rb.grade} dan seluruh sekolah.`;
     if (s.n < CONFIG.minN) {
@@ -1919,7 +1937,7 @@ ${sign ? `<table class="sign"><tr><td>Mengetahui,<br>Kepala SMA Plus PGRI Cibino
     g.hidden = !hide;
     if (hide) {
       g.innerHTML = `<h2 class="panel-title">Rincian kelas ${esc(state.kelas)} disembunyikan</h2>
-        <p class="panel-desc">${s.n ? `Hanya ${fmtNum(s.n)} responden` : 'Belum ada responden'} pada ${esc(rLabel(roundById(state.round)))}. Untuk menjaga anonimitas, data satu kelas baru ditampilkan bila ada minimal ${CONFIG.minN} responden.</p>
+        <p class="panel-desc">${s.n ? `Hanya ${fmtNum(s.n)} responden` : 'Belum ada responden'} pada ${esc(periodText())}. Untuk menjaga anonimitas, data satu kelas baru ditampilkan bila ada minimal ${CONFIG.minN} responden.</p>
         <button class="btn btn-ghost" type="button" data-guard-clear>Lihat semua kelas</button>`;
       $('[data-guard-clear]').addEventListener('click', () => { state.kelas = null; buildKelasCtl(); rerender(); });
     }
@@ -2040,8 +2058,8 @@ ${sign ? `<table class="sign"><tr><td>Mengetahui,<br>Kepala SMA Plus PGRI Cibino
   function renderVerdictList(s) {
     const t0 = scopeSeries();
     $('[data-verdict-desc]').textContent = t0.length >= 2
-      ? `Status menurut indeks periode ${rLabel(roundById(state.round))}; arah tren dibanding ${rLabel(t0[0].r)}. Pilih baris untuk melihat detail.`
-      : `Status menurut indeks periode ${rLabel(roundById(state.round))}. Pilih baris untuk melihat detail.`;
+      ? `Status menurut indeks ${periodText()}; arah tren dibanding ${rLabel(t0[0].r)}. Pilih baris untuk melihat detail.`
+      : `Status menurut indeks ${periodText()}. Pilih baris untuk melihat detail.`;
     $('[data-verdict-list]').innerHTML = HABITS.map((h, i) => {
       const [, lv, cls] = levelOf(s.index[i]);
       const t = habitTrend(i);
@@ -2091,7 +2109,7 @@ ${sign ? `<table class="sign"><tr><td>Mengetahui,<br>Kepala SMA Plus PGRI Cibino
   };
 
   function scopeSeries() {
-    return roundsWithData().filter((r) => r.id <= state.round).map((r) => ({ r, s: statsOf(r.id) }))
+    return roundsWithData().filter((r) => upTo(r.id)).map((r) => ({ r, s: statsOf(r.id) }))
       .filter((x) => x.s.n && !(state.kelas && x.s.n < CONFIG.minN));
   }
 
@@ -2145,7 +2163,7 @@ ${sign ? `<table class="sign"><tr><td>Mengetahui,<br>Kepala SMA Plus PGRI Cibino
       }
       const sized = list.filter((x) => x.rb.size);
       if (sized.length) {
-        const low = sized.filter((x) => x.s.n / x.rb.size < CONFIG.target).length;
+        const low = sized.filter((x) => nPer(x.s) / x.rb.size < CONFIG.target).length;
         out.push({ tone: low ? 'warn' : 'good', title: `${fmtNum(low)} dari ${fmtNum(sized.length)} kelas di bawah target isi`, text: `Target partisipasi ${fmtPct(CONFIG.target)}. Ingatkan wali kelas yang partisipasinya rendah.` });
       }
       const hidden = list.filter((x) => x.s.n > 0 && x.s.n < CONFIG.minN).length;
@@ -2192,7 +2210,7 @@ ${sign ? `<table class="sign"><tr><td>Mengetahui,<br>Kepala SMA Plus PGRI Cibino
     const box = $(`[data-analysis="${route}"]`);
     if (!box || !ANALYSIS[route]) return;
     const r = roundById(state.round);
-    $(`[data-analysis-desc="${route}"]`).textContent = `Dibuat otomatis dari data ${route === 'tren' ? `semua periode sampai ${rLabel(r)}` : `periode ${rLabel(r)}`}, ${scopeName()}.`;
+    $(`[data-analysis-desc="${route}"]`).textContent = `Dibuat otomatis dari data ${route === 'tren' ? (r.all ? 'semua periode' : `semua periode sampai ${rLabel(r)}`) : periodText(r)}, ${scopeName()}.`;
     let v = box.parentElement.querySelector('.analysis-verdict');
     if (!v) { v = document.createElement('p'); v.className = 'analysis-verdict'; box.before(v); }
     v.innerHTML = VERDICT[route] ? `<b>Kesimpulan:</b> ${esc(VERDICT[route]())}` : '';
@@ -2257,7 +2275,7 @@ ${sign ? `<table class="sign"><tr><td>Mengetahui,<br>Kepala SMA Plus PGRI Cibino
   }
   function afterReload(roundId) {
     const has = roundsWithData().map((r) => r.id);
-    state.round = has.includes(roundId) ? roundId : has.includes(state.round) ? state.round : has[has.length - 1] || 1;
+    state.round = has.includes(roundId) ? roundId : has.includes(state.round) || (isAll() && has.length > 1) ? state.round : has[has.length - 1] || 1;
     buildRoundCtl();
     buildKelasCtl();
     updateToday();
@@ -2269,7 +2287,7 @@ ${sign ? `<table class="sign"><tr><td>Mengetahui,<br>Kepala SMA Plus PGRI Cibino
      ------------------------------------------------------------------ */
   function buildRoundCtl() {
     const has = new Set(roundsWithData().map((r) => r.id));
-    $('[data-round-ctl]').innerHTML = `<select class="pick-select round-select" data-round-select aria-label="Pilih periode pengisian">${[...ROUNDS].reverse().map((r, i) => `<option value="${r.id}"${has.has(r.id) ? '' : ' disabled'}${r.id === state.round ? ' selected' : ''}>${esc(rLabel(r))}${i === 0 ? ' (terbaru)' : ''}</option>`).join('')}</select>`;
+    $('[data-round-ctl]').innerHTML = `<select class="pick-select round-select" data-round-select aria-label="Pilih periode pengisian">${has.size > 1 ? `<option value="${ALL}"${isAll() ? ' selected' : ''}>Semua periode</option>` : ''}${[...ROUNDS].reverse().map((r, i) => `<option value="${r.id}"${has.has(r.id) ? '' : ' disabled'}${r.id === state.round ? ' selected' : ''}>${esc(rLabel(r))}${i === 0 ? ' (terbaru)' : ''}</option>`).join('')}</select>`;
     $('[data-round-select]').addEventListener('change', (e) => setRound(Number(e.target.value)));
   }
   function setRound(id) {
@@ -2283,7 +2301,7 @@ ${sign ? `<table class="sign"><tr><td>Mengetahui,<br>Kepala SMA Plus PGRI Cibino
     const r = roundById(state.round);
     if (!r) { $('[data-today]').textContent = 'Belum ada periode pengisian'; return; }
     const when = rRange(r) ? `diisi ${rRange(r)}${r.main ? ` ${r.main.getFullYear()}` : ''}` : '';
-    $('[data-today]').textContent = `${DATA.source === 'sample' ? 'Data contoh · ' : ''}Periode ${r.label}${when ? ` · ${when}` : ''}`;
+    $('[data-today]').textContent = `${DATA.source === 'sample' ? 'Data contoh · ' : ''}${r.all ? `Semua periode (${r.count} periode)` : `Periode ${r.label}`}${when ? ` · ${when}` : ''}`;
   }
 
   /* Filter kelas: berlaku di semua halaman, seperti filter jenjang */
