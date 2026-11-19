@@ -1,0 +1,19 @@
+# Deploy lewat CLI: npx wrangler deploy (dari folder worker/).
+# Secret JANGAN ditulis di sini. Set dengan:
+#   npx wrangler secret put GEMINI_API_KEY
+#   npx wrangler secret put VERTIKAL_AI_ACCESS_CODE
+#   npx wrangler secret put SHEET_API_TOKEN      (opsional, data langsung dari spreadsheet)
+name = "vertikal-ai"
+main = "vertikal-ai.js"
+compatibility_date = "2026-10-01"
+
+[vars]
+SITE_URL = "https://AKUN.github.io/web3d/"
+ALLOWED_ORIGINS = "https://AKUN.github.io"
+GEMINI_MODEL = "gemini-3.8-flash"
+# SHEET_API_URL = "https://script.google.com/macros/s/.../exec"   (lihat apps-script/README.md)
+
+# Opsional: rate limit yang tahan restart. Buat KV namespace lalu isi id-nya.
+# [[kv_namespaces]]
+# binding = "VAI_KV"
+# id = "..."

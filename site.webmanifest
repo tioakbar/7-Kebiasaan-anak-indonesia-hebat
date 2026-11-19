@@ -1,0 +1,22 @@
+{
+  "name": "Monitoring 7 KAIH · SMA Plus PGRI Cibinong",
+  "short_name": "7 KAIH",
+  "start_url": "./index.html#/ringkasan",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#ece6fb",
+  "theme_color": "#6246d6",
+  "lang": "id",
+  "icons": [
+    {
+      "src": "assets/brand/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "assets/brand/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
